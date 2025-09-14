@@ -2,6 +2,8 @@
 Automação de Fluxo com Streamlit, Google Drive, Groq e Trello
 Este projeto utiliza Streamlit para criar uma interface web que automatiza um fluxo de trabalho: ler PDFs do Google Drive, analisá-los com um modelo de linguagem da Groq e adicionar os resultados como comentários em cartões do Trello.
 
+![App](src/appfront.png)
+
 # ⚙️ Pré-requisitos
 Antes de executar a aplicação, você precisará instalar as dependências Python necessárias.
 
