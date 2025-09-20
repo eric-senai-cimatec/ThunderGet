@@ -1,7 +1,6 @@
 import streamlit as st
 import os
 import io
-import re
 import fitz  # PyMuPDF
 import base64
 from PIL import Image
@@ -50,6 +49,15 @@ Mantenha a objetividade e a clareza. Utilize linguagem formal e profissional. N�
 
 if 'system_prompt' not in st.session_state:
     st.session_state.system_prompt = DEFAULT_SYSTEM_PROMPT
+
+# Prompt para a LLM de Parsing
+EXTRACTION_SYSTEM_PROMPT = """
+Sua única tarefa é extrair informações de um texto de análise.
+O texto de análise contém o nome do candidato e uma nota final.
+Sua resposta deve ser estritamente um objeto JSON com duas chaves: "candidate_name" (uma string) e "final_score" (um número inteiro).
+Exemplo: {"candidate_name": "João da Silva", "final_score": 90}
+Se o nome ou a nota não puderem ser encontrados, use os valores nulos 'null'.
+"""
 
 # --- Funções Auxiliares ---
 
@@ -134,7 +142,7 @@ Gere o 'system prompt' completo, começando com `<role>` e terminando com `</gen
                     "content": "Você é um especialista em engenharia de prompts."},
                 {"role": "user", "content": meta_prompt}
             ],
-            model="openai/gpt-oss-120b"
+            model="meta-llama/llama-4-scout-17b-16e-instruct"
         )
         return response.choices[0].message.content
     except Exception as e:
@@ -152,7 +160,7 @@ def get_analysis_from_groq(api_key, system_prompt, cv_text):
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": f"Por favor, analise o seguinte currículo:\n\n---\n\n{cv_text}"}
             ],
-            model="llama-3.3-70b-versatile"
+            model="openai/gpt-oss-120b"
         )
         return chat_completion.choices[0].message.content
     except Exception as e:
@@ -245,36 +253,48 @@ def create_trello_card(api_key, token, list_id, card_name, card_description):
         return None
 
 
-def parse_analysis_data(analysis_text):
+def parse_analysis_data(analysis_text, groq_api_key):
     """
-    Extrai o nome do candidato e a nota final do texto de análise de forma resiliente usando regex.
+    Extrai o nome do candidato e a nota final do texto de análise
+    usando uma LLM para maior resiliência.
     """
-    candidate_name, final_score = None, 0
-    if not analysis_text:
+    if not analysis_text or not groq_api_key:
         return "Candidato Desconhecido", 0
 
-    # Busca pelo nome do candidato em qualquer lugar do texto
-    name_match = re.search(r"nome do candidato:\s*(.*)", analysis_text, re.IGNORECASE)
-    if name_match:
-        candidate_name = name_match.group(1).strip()
+    try:
+        client = Groq(api_key=groq_api_key)
+        response = client.chat.completions.create(
+            messages=[
+                {"role": "system", "content": EXTRACTION_SYSTEM_PROMPT},
+                {"role": "user", "content": analysis_text}
+            ],
+            model="openai/gpt-oss-20b",
+            # Força o formato de resposta JSON
+            response_format={"type": "json_object"}
+        )
 
-    # Busca pela nota final, capturando apenas o primeiro número após "nota final:"
-    # Funciona para "Nota final: 85", "Nota final: 37/100", "Nota final: 90 pontos", etc.
-    score_match = re.search(r"nota final:\s*(\d+)", analysis_text, re.IGNORECASE)
-    if score_match:
-        try:
-            # Pega o primeiro grupo capturado (os dígitos) e converte para inteiro
-            final_score = int(score_match.group(1))
-        except (ValueError, IndexError):
-            # Caso algo inesperado aconteça, a nota será 0
+        # A resposta já vem como um objeto JSON
+        extracted_data = json.loads(response.choices[0].message.content)
+
+        candidate_name = extracted_data.get(
+            "candidate_name", "Candidato Desconhecido")
+        final_score = extracted_data.get("final_score", 0)
+
+        # Garante que a nota seja um inteiro e está dentro do limite
+        if not isinstance(final_score, int) or not (0 <= final_score <= 100):
             final_score = 0
 
-    return candidate_name, final_score
+        return candidate_name, final_score
+
+    except Exception as e:
+        st.error(f"Erro ao analisar o texto de análise com a LLM: {e}")
+        return "Candidato Desconhecido", 0
 
 
 # --- Interface do Streamlit ---
 with st.sidebar:
-    st.image("src/Gemini_Generated_Image_8661yc8661yc8661.png", use_container_width=True)
+    st.image("src/Gemini_Generated_Image_8661yc8661yc8661.png",
+             use_container_width=True)
     st.header("🔑 Configurações de API")
     groq_api_key = st.text_input(
         "Groq API Key", type="password", help="Usada para todas as tarefas de IA.")
@@ -411,7 +431,8 @@ if st.session_state.get('google_creds'):
                     if not analysis:
                         continue
 
-                    candidate_name, final_score = parse_analysis_data(analysis)
+                    candidate_name, final_score = parse_analysis_data(
+                        analysis, groq_api_key)
                     candidate_name = candidate_name or f"Candidato de '{pdf_name}'"
 
                     target_list_id = approved_list_id if final_score >= APPROVAL_THRESHOLD else reproved_list_id
