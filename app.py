@@ -134,7 +134,7 @@ Gere o 'system prompt' completo, começando com `<role>` e terminando com `</gen
                     "content": "Você é um especialista em engenharia de prompts."},
                 {"role": "user", "content": meta_prompt}
             ],
-            model="openai/gpt-oss-20b"
+            model="openai/gpt-oss-120b"
         )
         return response.choices[0].message.content
     except Exception as e:
@@ -281,7 +281,32 @@ with st.sidebar:
     trello_api_key = st.text_input("Trello API Key", type="password")
     trello_token = st.text_input("Trello API Token", type="password")
 
-with st.expander("Passo 1: Personalizar o Prompt de Análise (Opcional)"):
+
+st.header("Passo 1: Conectar ao Google Drive")
+if 'google_creds' not in st.session_state:
+    st.session_state.google_creds = None
+auth_code = st.query_params.get("code")
+
+try:
+    flow = get_google_auth_flow()
+    if not st.session_state.google_creds and auth_code:
+        flow.fetch_token(code=auth_code)
+        st.session_state.google_creds = json.loads(flow.credentials.to_json())
+        st.rerun()
+
+    if st.session_state.google_creds:
+        st.success("Conectado ao Google Drive com sucesso!")
+        drive_service = build_drive_service(st.session_state.google_creds)
+    else:
+        auth_url, _ = flow.authorization_url(prompt='consent')
+        st.markdown(
+            f'Por favor, [clique aqui para autorizar o acesso ao Google Drive]({auth_url}).', unsafe_allow_html=True)
+except Exception as e:
+    st.error(
+        f"Erro na autenticação do Google: {e}. Verifique seu arquivo 'credentials.json'.")
+
+
+with st.expander("Passo 2: Personalizar o Prompt de Análise (Opcional)"):
     st.write(
         "Forneça a descrição da vaga para criar um prompt de avaliação personalizado.")
     job_desc_text = st.text_area("Cole a descrição da vaga aqui:")
@@ -311,29 +336,6 @@ with st.expander("Passo 1: Personalizar o Prompt de Análise (Opcional)"):
 
     with st.expander("Ver Prompt Ativo", expanded=False):
         st.code(st.session_state.system_prompt, language='markdown')
-
-st.header("Passo 2: Conectar ao Google Drive")
-if 'google_creds' not in st.session_state:
-    st.session_state.google_creds = None
-auth_code = st.query_params.get("code")
-
-try:
-    flow = get_google_auth_flow()
-    if not st.session_state.google_creds and auth_code:
-        flow.fetch_token(code=auth_code)
-        st.session_state.google_creds = json.loads(flow.credentials.to_json())
-        st.rerun()
-
-    if st.session_state.google_creds:
-        st.success("Conectado ao Google Drive com sucesso!")
-        drive_service = build_drive_service(st.session_state.google_creds)
-    else:
-        auth_url, _ = flow.authorization_url(prompt='consent')
-        st.markdown(
-            f'Por favor, [clique aqui para autorizar o acesso ao Google Drive]({auth_url}).', unsafe_allow_html=True)
-except Exception as e:
-    st.error(
-        f"Erro na autenticação do Google: {e}. Verifique seu arquivo 'credentials.json'.")
 
 
 if st.session_state.get('google_creds'):
