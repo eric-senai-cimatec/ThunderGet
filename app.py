@@ -1,5 +1,4 @@
 import streamlit as st
-import os
 import io
 import fitz  # PyMuPDF
 import base64
@@ -160,7 +159,7 @@ def get_analysis_from_groq(api_key, system_prompt, cv_text):
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": f"Por favor, analise o seguinte currículo:\n\n---\n\n{cv_text}"}
             ],
-            model="openai/gpt-oss-120b"
+            model="llama-3.3-70b-versatile"
         )
         return chat_completion.choices[0].message.content
     except Exception as e:
@@ -169,16 +168,33 @@ def get_analysis_from_groq(api_key, system_prompt, cv_text):
 
 
 def get_google_auth_flow():
-    if not os.path.exists('credentials.json'):
-        st.error("Arquivo 'credentials.json' não encontrado.")
-        st.stop()
-    client_config = json.load(open('credentials.json'))
+    """Cria um objeto Flow a partir das credenciais carregadas no session_state."""
+    if 'gcp_client_config' not in st.session_state:
+        # Se as credenciais não foram carregadas, retorna None para que a UI possa reagir.
+        return None
+
+    client_config = st.session_state.gcp_client_config
+
     config_key = 'web' if 'web' in client_config else 'installed'
     if config_key not in client_config:
-        st.error("O arquivo credentials.json não é do tipo 'Aplicativo da Web'.")
-        st.stop()
+        st.error("O arquivo de credenciais JSON não contém a chave 'web' ou 'installed'. Verifique se é um arquivo de ID de Cliente OAuth 2.0.")
+        return None
+
+    # É crucial que uma das URIs de redirecionamento autorizadas no seu projeto GCP
+    # corresponda exatamente ao URL da sua aplicação Streamlit.
+    # Para desenvolvimento local, geralmente é http://localhost:8501.
+    # Para produção, você precisará adicionar o URL da sua aplicação implantada.
     redirect_uri = client_config[config_key]['redirect_uris'][0]
-    return Flow.from_client_config(client_config=client_config, scopes=SCOPES, redirect_uri=redirect_uri)
+
+    try:
+        return Flow.from_client_config(
+            client_config=client_config,
+            scopes=SCOPES,
+            redirect_uri=redirect_uri
+        )
+    except Exception as e:
+        st.error(f"Erro ao criar o fluxo de autenticação: {e}")
+        return None
 
 
 def build_drive_service(creds_json):
@@ -296,6 +312,30 @@ with st.sidebar:
     st.image("src/Gemini_Generated_Image_8661yc8661yc8661.png",
              use_container_width=True)
     st.header("🔑 Configurações de API")
+    gcp_credentials_file = st.file_uploader(
+        "Credenciais GCP (JSON)",
+        type="json",
+        help="Faça o upload do arquivo JSON de credenciais do seu projeto GCP (OAuth 2.0 Client ID)."
+    )
+
+    # Processa o arquivo carregado e o armazena no estado da sessão
+    if gcp_credentials_file is not None:
+        try:
+            # Lê o conteúdo do arquivo e o converte para um dicionário Python
+            string_data = gcp_credentials_file.getvalue().decode("utf-8")
+            st.session_state.gcp_client_config = json.loads(string_data)
+            # Apenas mostra a mensagem na primeira vez que o arquivo é carregado
+            if 'gcp_creds_loaded' not in st.session_state or not st.session_state.gcp_creds_loaded:
+                st.success("Credenciais GCP carregadas com sucesso!")
+                st.session_state.gcp_creds_loaded = True
+        except json.JSONDecodeError:
+            st.error("Erro: O arquivo fornecido não é um JSON válido.")
+            if 'gcp_client_config' in st.session_state:
+                del st.session_state.gcp_client_config  # Limpa credencial inválida
+        except Exception as e:
+            st.error(f"Erro ao processar o arquivo: {e}")
+            if 'gcp_client_config' in st.session_state:
+                del st.session_state.gcp_client_config  # Limpa credencial inválida
     groq_api_key = st.text_input(
         "Groq API Key", type="password", help="Usada para todas as tarefas de IA.")
     trello_api_key = st.text_input("Trello API Key", type="password")
@@ -307,12 +347,19 @@ if 'google_creds' not in st.session_state:
     st.session_state.google_creds = None
 auth_code = st.query_params.get("code")
 
-try:
-    flow = get_google_auth_flow()
+flow = get_google_auth_flow()
+
+if flow:
+    # Se o flow existe, o processo de autenticação pode continuar
     if not st.session_state.google_creds and auth_code:
-        flow.fetch_token(code=auth_code)
-        st.session_state.google_creds = json.loads(flow.credentials.to_json())
-        st.rerun()
+        try:
+            flow.fetch_token(code=auth_code)
+            st.session_state.google_creds = json.loads(flow.credentials.to_json())
+            # Limpa o código da URL para evitar reuso e entra em loop
+            st.query_params.clear()
+            st.rerun()
+        except Exception as e:
+            st.error(f"Falha ao obter o token de acesso: {e}")
 
     if st.session_state.google_creds:
         st.success("Conectado ao Google Drive com sucesso!")
@@ -321,9 +368,10 @@ try:
         auth_url, _ = flow.authorization_url(prompt='consent')
         st.markdown(
             f'Por favor, [clique aqui para autorizar o acesso ao Google Drive]({auth_url}).', unsafe_allow_html=True)
-except Exception as e:
-    st.error(
-        f"Erro na autenticação do Google: {e}. Verifique seu arquivo 'credentials.json'.")
+else:
+    # Se o flow não existe, significa que as credenciais não foram carregadas.
+    st.info("Para começar, faça o upload do seu arquivo de credenciais GCP na barra lateral.")
+    drive_service = None  # Garante que o drive_service não seja usado
 
 
 with st.expander("Passo 2: Personalizar o Prompt de Análise (Opcional)"):
@@ -358,7 +406,7 @@ with st.expander("Passo 2: Personalizar o Prompt de Análise (Opcional)"):
         st.code(st.session_state.system_prompt, language='markdown')
 
 
-if st.session_state.get('google_creds'):
+if 'drive_service' in locals() and drive_service is not None:
     col1, col2 = st.columns(2)
     with col1:
         st.header("Passo 3: Selecionar Destino")
